@@ -40,9 +40,9 @@ MCP client configuration example:
 
 ```bash
 docker buildx build --platform linux/amd64,linux/arm64 \
-  --build-arg CBM_VERSION=v0.9.0 \
+  --build-arg CBM_VERSION=v0.10.4 \
   -t shrinedogg/codebase-memory-mcp:latest \
-  -t shrinedogg/codebase-memory-mcp:v0.9.0 \
+  -t shrinedogg/codebase-memory-mcp:v0.10.4 \
   --push .
 ```
 
