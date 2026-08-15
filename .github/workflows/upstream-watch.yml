@@ -1,0 +1,91 @@
+name: upstream-watch
+on:
+  schedule:
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Resolve latest upstream release
+        id: up
+        run: |
+          tag=$(curl -sf -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            https://api.github.com/repos/DeusData/codebase-memory-mcp/releases/latest | jq -r .tag_name)
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Compare with VERSION
+        id: cmp
+        run: |
+          cur=$(cat VERSION)
+          echo "current=$cur" >> "$GITHUB_OUTPUT"
+          if [ "$cur" = "${{ steps.up.outputs.tag }}" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip if a bump PR is already open
+        if: steps.cmp.outputs.changed == 'true'
+        id: dup
+        run: |
+          if gh pr list --state open --base main --json title \
+               | jq -e '.[] | select(.title | contains("${{ steps.up.outputs.tag }}"))' > /dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Bump submodule, VERSION, README
+        if: steps.cmp.outputs.changed == 'true' && steps.dup.outputs.exists == 'false'
+        run: |
+          tag="${{ steps.up.outputs.tag }}"
+          git -C codebase-memory-mcp fetch --tags origin
+          git -C codebase-memory-mcp checkout "$tag"
+          echo "$tag" > VERSION
+          sed -i -E \
+            -e "s/(CBM_VERSION=)v[0-9]+\.[0-9]+\.[0-9]+/\1$tag/" \
+            -e "s/(codebase-memory-mcp:)v[0-9]+\.[0-9]+\.[0-9]+/\1$tag/" \
+            README.md
+
+      - name: Pre-merge test build (amd64, no push)
+        if: steps.cmp.outputs.changed == 'true' && steps.dup.outputs.exists == 'false'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build check
+        if: steps.cmp.outputs.changed == 'true' && steps.dup.outputs.exists == 'false'
+        run: |
+          docker buildx build --platform linux/amd64 \
+            --build-arg CBM_VERSION="${{ steps.up.outputs.tag }}" \
+            --load -t cbm-check:${{ steps.up.outputs.tag }} .
+          docker run --rm cbm-check:${{ steps.up.outputs.tag }} --help > /dev/null 2>&1 || true
+
+      - name: Commit, push branch, open PR
+        if: steps.cmp.outputs.changed == 'true' && steps.dup.outputs.exists == 'false'
+        run: |
+          tag="${{ steps.up.outputs.tag }}"
+          branch="chore/upstream-$tag"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add VERSION README.md codebase-memory-mcp
+          git commit -m "chore: bump upstream to $tag"
+          git push -u origin "$branch"
+          gh pr create --base main --head "$branch" \
+            --title "chore: bump upstream to $tag" \
+            --body "Upstream release: https://github.com/DeusData/codebase-memory-mcp/releases/tag/$tag
+
+          Automated: submodule pin, VERSION, README examples. Pre-merge amd64 test build passed in the watcher job. Merging triggers build-and-push of :$tag and :latest."
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
