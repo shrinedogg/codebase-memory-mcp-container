@@ -81,6 +81,12 @@ jobs:
           git checkout -b "$branch"
           git add VERSION README.md codebase-memory-mcp
           git commit -m "chore: bump upstream to $tag"
+          # A remote branch with no open PR can only be a leftover from a
+          # previously failed run (e.g. PR creation was blocked), so the
+          # fresh bump commit replaces it.
+          if git ls-remote --exit-code --heads origin "$branch" > /dev/null 2>&1; then
+            git push origin --delete "$branch"
+          fi
           git push -u origin "$branch"
           gh pr create --base main --head "$branch" \
             --title "chore: bump upstream to $tag" \
